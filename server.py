@@ -390,6 +390,10 @@ def on_join(data):
         "engagement_score": 0.5,
         "attention_scores": []
     }
+
+    # Start transcription worker if enabled
+    if TRANSCRIPTION_ENABLED:
+        start_transcription_worker(room, socketio)
     
     # Send existing peers to new participant
     existing_peers = [sid for sid in rooms[room] if sid != request.sid]
@@ -536,7 +540,7 @@ def handle_attention(data):
 def handle_network_stats(data):
     room = data.get('room', 'default')
     stats = data.get('stats', {})
-    
+
     # Store network stats
     room_data[room]["network_stats"][request.sid] = {
         "timestamp": time.time(),
@@ -544,7 +548,7 @@ def handle_network_stats(data):
         "packet_loss": stats.get("packet_loss", 0),
         "bandwidth": stats.get("bandwidth", 1000)
     }
-    
+
     # Evaluate network and suggest adaptation
     if NETWORK_ADAPTATION_ENABLED:
         try:
@@ -552,6 +556,23 @@ def handle_network_stats(data):
             emit('network-adaptation', {"mode": mode, "stats": stats})
         except Exception as e:
             log.error(f"Network adaptation error: {e}")
+
+@socketio.on('audio-chunk')
+def handle_audio_chunk_event(data):
+    """Handle real-time audio chunks for transcription"""
+    if not TRANSCRIPTION_ENABLED:
+        return
+
+    room = data.get('room', 'default')
+    audio_data = data.get('audio')
+    timestamp = data.get('timestamp')
+    sequence = data.get('sequence', 0)
+
+    if audio_data and room:
+        try:
+            handle_audio_chunk(room, audio_data, timestamp, sequence)
+        except Exception as e:
+            log.error(f"Error handling audio chunk: {e}")
 
 def analyze_simple_sentiment(text):
     """Simple sentiment analysis"""

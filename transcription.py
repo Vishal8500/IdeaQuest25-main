@@ -104,12 +104,12 @@ def transcribe_audio_data(audio_data, backend="mock"):
 def transcribe_with_openai(audio_data):
     """Transcribe using OpenAI Whisper API"""
     try:
-        # Save audio data to temporary file
-        uid = uuid.uuid4().hex
-        temp_path = f"/tmp/audio_{uid}.wav"
+        import tempfile
 
-        with open(temp_path, "wb") as f:
-            f.write(audio_data)
+        # Save audio data to temporary file (Windows compatible)
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(audio_data)
 
         # Use OpenAI Whisper
         client = openai.OpenAI(api_key=OPENAI_API_KEY)
@@ -117,7 +117,8 @@ def transcribe_with_openai(audio_data):
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
-                response_format="text"
+                response_format="text",
+                language="en"
             )
 
         # Clean up
@@ -135,23 +136,31 @@ def transcribe_with_openai(audio_data):
 def transcribe_with_speech_recognition(audio_data):
     """Transcribe using SpeechRecognition library"""
     try:
-        # This is a simplified implementation
-        # In practice, you'd need to convert the audio format properly
+        import tempfile
         r = sr.Recognizer()
 
-        # Save audio data to temporary file
-        uid = uuid.uuid4().hex
-        temp_path = f"/tmp/audio_{uid}.wav"
-
-        with open(temp_path, "wb") as f:
-            f.write(audio_data)
+        # Save audio data to temporary file (Windows compatible)
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(audio_data)
 
         # Load audio file
         with sr.AudioFile(temp_path) as source:
+            # Adjust for ambient noise
+            r.adjust_for_ambient_noise(source, duration=0.5)
             audio = r.record(source)
 
-        # Recognize speech using Google Speech Recognition
-        text = r.recognize_google(audio)
+        # Try multiple recognition services
+        text = None
+        try:
+            # Try Google Speech Recognition first
+            text = r.recognize_google(audio, language='en-US')
+        except (sr.UnknownValueError, sr.RequestError):
+            try:
+                # Fallback to Sphinx (offline)
+                text = r.recognize_sphinx(audio)
+            except (sr.UnknownValueError, sr.RequestError):
+                pass
 
         # Clean up
         try:

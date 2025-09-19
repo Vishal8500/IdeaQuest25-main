@@ -556,59 +556,141 @@ document.addEventListener('DOMContentLoaded', () => {
   // Speech Recognition
   function startSpeechRecognition() {
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      log('Speech recognition not supported');
+      log('Speech recognition not supported, trying audio chunk method');
+      startAudioChunkTranscription();
       return;
     }
-    
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     speechRecognition = new SpeechRecognition();
-    
+
     speechRecognition.continuous = true;
     speechRecognition.interimResults = true;
     speechRecognition.lang = 'en-US';
-    
+    speechRecognition.maxAlternatives = 1;
+
+    speechRecognition.onstart = () => {
+      log('Speech recognition started');
+      showNotification('Speech recognition active', 'success', 2000);
+    };
+
     speechRecognition.onresult = (event) => {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         if (result.isFinal) {
           const text = result[0].transcript.trim();
-          if (text) {
+          if (text && text.length > 2) { // Filter out very short utterances
             const payload = {
               room,
               text,
-              ts: Math.floor(Date.now() / 1000)
+              ts: Math.floor(Date.now() / 1000),
+              confidence: result[0].confidence || 0.8
             };
-            
+
             socket.emit('transcript-text', payload);
-            log(`Transcript: ${text}`);
+            log(`Transcript: ${text} (confidence: ${(payload.confidence * 100).toFixed(1)}%)`);
           }
         }
       }
     };
-    
+
     speechRecognition.onerror = (event) => {
       log('Speech recognition error:', event.error);
       if (event.error === 'not-allowed') {
         showNotification('Microphone access denied for speech recognition', 'error');
+      } else if (event.error === 'network') {
+        showNotification('Network error in speech recognition, retrying...', 'warning', 3000);
+      } else if (event.error === 'no-speech') {
+        // This is normal, don't show notification
+        log('No speech detected, continuing...');
       }
     };
-    
+
     speechRecognition.onend = () => {
       if (joined) {
         // Restart if still in meeting
         setTimeout(() => {
           if (speechRecognition && joined) {
-            speechRecognition.start();
+            try {
+              speechRecognition.start();
+            } catch (error) {
+              log('Error restarting speech recognition:', error);
+              // Fallback to audio chunk method
+              startAudioChunkTranscription();
+            }
           }
         }, 1000);
       }
     };
-    
+
     try {
       speechRecognition.start();
-      log('Speech recognition started');
     } catch (error) {
       log('Error starting speech recognition:', error);
+      showNotification('Speech recognition failed, trying alternative method', 'warning', 3000);
+      startAudioChunkTranscription();
+    }
+  }
+
+  // Alternative audio chunk transcription method
+  function startAudioChunkTranscription() {
+    if (!localStream) return;
+
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioContext.createMediaStreamSource(localStream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+      let audioChunks = [];
+      let sequenceNumber = 0;
+
+      processor.onaudioprocess = (event) => {
+        const inputData = event.inputBuffer.getChannelData(0);
+
+        // Convert to 16-bit PCM
+        const pcmData = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+        }
+
+        audioChunks.push(pcmData);
+
+        // Send chunks every 3 seconds
+        if (audioChunks.length >= 32) { // ~3 seconds at 4096 samples per chunk
+          const combinedData = new Int16Array(audioChunks.reduce((acc, chunk) => acc + chunk.length, 0));
+          let offset = 0;
+          for (const chunk of audioChunks) {
+            combinedData.set(chunk, offset);
+            offset += chunk.length;
+          }
+
+          // Convert to base64
+          const audioBlob = new Blob([combinedData], { type: 'audio/wav' });
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64Audio = reader.result.split(',')[1];
+            socket.emit('audio-chunk', {
+              room,
+              audio: base64Audio,
+              timestamp: Date.now(),
+              sequence: sequenceNumber++
+            });
+          };
+          reader.readAsDataURL(audioBlob);
+
+          audioChunks = [];
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      log('Audio chunk transcription started');
+      showNotification('Audio transcription active', 'info', 2000);
+
+    } catch (error) {
+      log('Error starting audio chunk transcription:', error);
+      showNotification('Transcription not available', 'error', 3000);
     }
   }
   
