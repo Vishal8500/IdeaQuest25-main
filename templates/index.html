@@ -134,10 +134,37 @@
           <div class="card">
             <div class="card-header">
               <h3>Live Transcript</h3>
-              <button id="downloadTranscript" class="btn-small">
-                <i class="fas fa-download"></i> Download
-              </button>
+              <div class="transcript-controls">
+                <button id="toggleSpeechRecognition" class="btn-small speech-toggle">
+                  <i class="fas fa-microphone"></i> Start Speech
+                </button>
+                <button id="downloadTranscript" class="btn-small">
+                  <i class="fas fa-download"></i> Download
+                </button>
+              </div>
             </div>
+
+            <!-- Live Speech Recognition Display -->
+            <div id="liveSpeechContainer" class="live-speech-container">
+              <div class="speech-status">
+                <div id="speechStatus" class="status-indicator">
+                  <i class="fas fa-microphone-slash"></i>
+                  <span>Speech recognition inactive</span>
+                </div>
+                <div id="speechConfidence" class="confidence-meter">
+                  <div class="confidence-bar">
+                    <div id="confidenceLevel" class="confidence-fill"></div>
+                  </div>
+                  <span id="confidenceText">0%</span>
+                </div>
+              </div>
+
+              <div id="interimResults" class="interim-results">
+                <span class="interim-label">Speaking:</span>
+                <span id="interimText" class="interim-text">...</span>
+              </div>
+            </div>
+
             <div id="transcriptBox" class="transcript-container"></div>
           </div>
 

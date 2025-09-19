@@ -27,7 +27,7 @@ audio_workers = {}
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # Setup logging
-logger = logging.getLogger(_name_)
+logger = logging.getLogger(__name__)
 
 def get_transcription_backend():
     """Determine which transcription backend to use"""

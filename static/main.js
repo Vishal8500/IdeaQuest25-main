@@ -8,6 +8,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let meetingStartTime = null;
   let currentTab = 'participants';
   let speechRecognition = null;
+  let isListening = false;
+  let speechRecognitionEnabled = false;
+  let lastInterimResult = '';
   let attentionInterval = null;
   let networkStatsInterval = null;
   let engagementUpdateInterval = null;
@@ -42,6 +45,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const avgAttentionEl = document.getElementById('avgAttention');
   const engagementScoreEl = document.getElementById('engagementScore');
   const localAttentionEl = document.getElementById('localAttention');
+
+  // Speech recognition elements
+  const toggleSpeechBtn = document.getElementById('toggleSpeechRecognition');
+  const speechStatusEl = document.getElementById('speechStatus');
+  const speechConfidenceEl = document.getElementById('speechConfidence');
+  const confidenceLevelEl = document.getElementById('confidenceLevel');
+  const confidenceTextEl = document.getElementById('confidenceText');
+  const interimTextEl = document.getElementById('interimText');
   
   // Quick action buttons
   const toggleVideoBtn = document.getElementById('toggleVideo');
@@ -66,6 +77,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeTabs();
   initializeCharts();
   initializeQuickActions();
+  initializeSpeechRecognition();
   
   function log(...args) {
     console.log('[AgamAI]', ...args);
@@ -190,6 +202,26 @@ document.addEventListener('DOMContentLoaded', () => {
     shareScreenBtn.addEventListener('click', shareScreen);
     toggleTranscriptBtn.addEventListener('click', toggleTranscript);
   }
+
+  function initializeSpeechRecognition() {
+    // Check if Web Speech API is supported
+    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+      speechStatusEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> <span>Speech recognition not supported in this browser</span>';
+      toggleSpeechBtn.disabled = true;
+      toggleSpeechBtn.style.opacity = '0.5';
+      return;
+    }
+
+    // Initialize speech recognition button
+    toggleSpeechBtn.addEventListener('click', toggleSpeechRecognition);
+
+    // Update initial status
+    updateSpeechStatus('inactive', 'Speech recognition ready');
+    updateConfidence(0);
+    updateInterimText('Click "Start Speech" to begin...');
+
+    log('Speech recognition initialized');
+  }
   
   // Socket event handlers
   socket.on('connect', () => {
@@ -310,10 +342,16 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Start features
       startMeetingTimer();
-      startSpeechRecognition();
       startAttentionDetection();
       startNetworkMonitoring();
       startPeriodicUpdates();
+
+      // Auto-start speech recognition if supported
+      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        setTimeout(() => {
+          startEnhancedSpeechRecognition();
+        }, 1000); // Small delay to ensure everything is set up
+      }
       
       showNotification(`Joined meeting: ${room}`, 'success');
       log(`Joined room: ${room}`);
@@ -343,8 +381,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     if (speechRecognition) {
-      speechRecognition.stop();
-      speechRecognition = null;
+      stopSpeechRecognition();
     }
     
     if (attentionInterval) {
@@ -553,73 +590,140 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   
-  // Speech Recognition
-  function startSpeechRecognition() {
+  // Enhanced Speech Recognition with Live Updates
+  function toggleSpeechRecognition() {
+    if (!speechRecognitionEnabled) {
+      startEnhancedSpeechRecognition();
+    } else {
+      stopSpeechRecognition();
+    }
+  }
+
+  function startEnhancedSpeechRecognition() {
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      log('Speech recognition not supported, trying audio chunk method');
-      startAudioChunkTranscription();
+      showNotification('Speech recognition not supported in this browser', 'error');
       return;
     }
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     speechRecognition = new SpeechRecognition();
 
+    // Configure speech recognition for optimal real-time performance
     speechRecognition.continuous = true;
     speechRecognition.interimResults = true;
     speechRecognition.lang = 'en-US';
-    speechRecognition.maxAlternatives = 1;
+    speechRecognition.maxAlternatives = 3;
 
     speechRecognition.onstart = () => {
-      log('Speech recognition started');
-      showNotification('Speech recognition active', 'success', 2000);
+      isListening = true;
+      speechRecognitionEnabled = true;
+      updateSpeechStatus('listening', 'Listening...');
+      updateSpeechButton(true);
+      updateInterimText('Listening for speech...');
+      log('Enhanced speech recognition started');
+      showNotification('Speech recognition started - speak now!', 'success', 3000);
     };
 
     speechRecognition.onresult = (event) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+      let maxConfidence = 0;
+
+      // Process all results
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        if (result.isFinal) {
-          const text = result[0].transcript.trim();
-          if (text && text.length > 2) { // Filter out very short utterances
-            const payload = {
-              room,
-              text,
-              ts: Math.floor(Date.now() / 1000),
-              confidence: result[0].confidence || 0.8
-            };
+        const transcript = result[0].transcript;
+        const confidence = result[0].confidence || 0.8;
 
-            socket.emit('transcript-text', payload);
-            log(`Transcript: ${text} (confidence: ${(payload.confidence * 100).toFixed(1)}%)`);
-          }
+        maxConfidence = Math.max(maxConfidence, confidence);
+
+        if (result.isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      // Update confidence meter
+      updateConfidence(maxConfidence);
+
+      // Update interim results display
+      if (interimTranscript) {
+        updateInterimText(interimTranscript, true);
+        lastInterimResult = interimTranscript;
+      }
+
+      // Process final results
+      if (finalTranscript.trim()) {
+        const text = finalTranscript.trim();
+        if (text.length > 1) { // Filter out very short utterances
+          // Add to local transcript immediately for instant feedback
+          addLiveTranscriptEntry(text, maxConfidence);
+
+          // Send to server for processing and sharing
+          const payload = {
+            room,
+            text,
+            ts: Math.floor(Date.now() / 1000),
+            confidence: maxConfidence,
+            source: 'live_speech'
+          };
+
+          socket.emit('transcript-text', payload);
+          log(`Live transcript: ${text} (confidence: ${(maxConfidence * 100).toFixed(1)}%)`);
+
+          // Clear interim text after final result
+          updateInterimText('Listening for speech...');
         }
       }
     };
 
     speechRecognition.onerror = (event) => {
       log('Speech recognition error:', event.error);
-      if (event.error === 'not-allowed') {
-        showNotification('Microphone access denied for speech recognition', 'error');
-      } else if (event.error === 'network') {
-        showNotification('Network error in speech recognition, retrying...', 'warning', 3000);
-      } else if (event.error === 'no-speech') {
-        // This is normal, don't show notification
-        log('No speech detected, continuing...');
+
+      switch (event.error) {
+        case 'not-allowed':
+          updateSpeechStatus('error', 'Microphone access denied');
+          showNotification('Please allow microphone access for speech recognition', 'error');
+          stopSpeechRecognition();
+          break;
+        case 'network':
+          updateSpeechStatus('error', 'Network error');
+          showNotification('Network error - retrying speech recognition...', 'warning', 3000);
+          break;
+        case 'no-speech':
+          updateSpeechStatus('listening', 'No speech detected - keep talking');
+          break;
+        case 'audio-capture':
+          updateSpeechStatus('error', 'Audio capture error');
+          showNotification('Audio capture error - check microphone', 'error');
+          break;
+        default:
+          updateSpeechStatus('error', `Error: ${event.error}`);
+          showNotification(`Speech recognition error: ${event.error}`, 'warning');
       }
     };
 
     speechRecognition.onend = () => {
-      if (joined) {
-        // Restart if still in meeting
+      isListening = false;
+
+      if (speechRecognitionEnabled) {
+        // Auto-restart if still enabled
         setTimeout(() => {
-          if (speechRecognition && joined) {
+          if (speechRecognitionEnabled && speechRecognition) {
             try {
               speechRecognition.start();
             } catch (error) {
               log('Error restarting speech recognition:', error);
-              // Fallback to audio chunk method
-              startAudioChunkTranscription();
+              updateSpeechStatus('error', 'Failed to restart');
+              showNotification('Speech recognition stopped - click to restart', 'warning');
+              stopSpeechRecognition();
             }
           }
-        }, 1000);
+        }, 100);
+      } else {
+        updateSpeechStatus('inactive', 'Speech recognition stopped');
+        updateInterimText('Click "Start Speech" to begin...');
       }
     };
 
@@ -627,9 +731,92 @@ document.addEventListener('DOMContentLoaded', () => {
       speechRecognition.start();
     } catch (error) {
       log('Error starting speech recognition:', error);
-      showNotification('Speech recognition failed, trying alternative method', 'warning', 3000);
-      startAudioChunkTranscription();
+      updateSpeechStatus('error', 'Failed to start');
+      showNotification('Failed to start speech recognition: ' + error.message, 'error');
+      speechRecognitionEnabled = false;
+      updateSpeechButton(false);
     }
+  }
+
+  function stopSpeechRecognition() {
+    speechRecognitionEnabled = false;
+    isListening = false;
+
+    if (speechRecognition) {
+      try {
+        speechRecognition.stop();
+      } catch (error) {
+        log('Error stopping speech recognition:', error);
+      }
+      speechRecognition = null;
+    }
+
+    updateSpeechStatus('inactive', 'Speech recognition stopped');
+    updateSpeechButton(false);
+    updateInterimText('Click "Start Speech" to begin...');
+    updateConfidence(0);
+
+    showNotification('Speech recognition stopped', 'info', 2000);
+    log('Speech recognition stopped');
+  }
+
+  // UI Update Functions for Speech Recognition
+  function updateSpeechStatus(status, message) {
+    const statusIcon = status === 'listening' ? 'fa-microphone' :
+                      status === 'error' ? 'fa-exclamation-triangle' :
+                      'fa-microphone-slash';
+
+    speechStatusEl.innerHTML = `<i class="fas ${statusIcon}"></i> <span>${message}</span>`;
+    speechStatusEl.className = `status-indicator ${status}`;
+  }
+
+  function updateSpeechButton(isActive) {
+    if (isActive) {
+      toggleSpeechBtn.innerHTML = '<i class="fas fa-stop"></i> Stop Speech';
+      toggleSpeechBtn.className = 'btn-small speech-toggle listening';
+    } else {
+      toggleSpeechBtn.innerHTML = '<i class="fas fa-microphone"></i> Start Speech';
+      toggleSpeechBtn.className = 'btn-small speech-toggle';
+    }
+  }
+
+  function updateConfidence(confidence) {
+    const percentage = Math.round(confidence * 100);
+    confidenceLevelEl.style.width = `${percentage}%`;
+    confidenceTextEl.textContent = `${percentage}%`;
+  }
+
+  function updateInterimText(text, isSpeaking = false) {
+    interimTextEl.textContent = text;
+    interimTextEl.className = isSpeaking ? 'interim-text speaking' : 'interim-text';
+  }
+
+  function addLiveTranscriptEntry(text, confidence) {
+    const transcriptEntry = document.createElement('div');
+    transcriptEntry.className = 'transcript-entry live';
+
+    const timestamp = new Date().toLocaleTimeString();
+    const confidencePercent = Math.round(confidence * 100);
+
+    transcriptEntry.innerHTML = `
+      <div class="transcript-meta">
+        <span><strong>You (Live)</strong></span>
+        <span>${timestamp} • ${confidencePercent}% confidence</span>
+      </div>
+      <div class="transcript-text">${text}</div>
+    `;
+
+    transcriptBox.appendChild(transcriptEntry);
+    transcriptBox.scrollTop = transcriptBox.scrollHeight;
+
+    // Add a subtle animation
+    transcriptEntry.style.opacity = '0';
+    transcriptEntry.style.transform = 'translateY(10px)';
+    setTimeout(() => {
+      transcriptEntry.style.transition = 'all 0.3s ease';
+      transcriptEntry.style.opacity = '1';
+      transcriptEntry.style.transform = 'translateY(0)';
+    }, 10);
   }
 
   // Alternative audio chunk transcription method
@@ -1149,18 +1336,15 @@ document.addEventListener('DOMContentLoaded', () => {
   
   function toggleTranscript() {
     const isActive = toggleTranscriptBtn.classList.contains('active');
-    
+
     if (isActive) {
       // Stop speech recognition
-      if (speechRecognition) {
-        speechRecognition.stop();
-        speechRecognition = null;
-      }
+      stopSpeechRecognition();
       toggleTranscriptBtn.classList.remove('active');
       showNotification('Live transcription disabled', 'info', 2000);
     } else {
       // Start speech recognition
-      startSpeechRecognition();
+      startEnhancedSpeechRecognition();
       toggleTranscriptBtn.classList.add('active');
       showNotification('Live transcription enabled', 'success', 2000);
     }
