@@ -1,40 +1,39 @@
-# transcription.py - Enhanced transcription with multiple backends
-import os
+# transcription.py - OpenAI Whisper tiny model transcription
 import time
 import queue
-import uuid
 import threading
 import logging
 from collections import defaultdict
 import base64
 
-# Try to import optional dependencies
+# Try to import Whisper
 try:
-    import openai
-    OPENAI_AVAILABLE = True
+    import whisper
+    WHISPER_AVAILABLE = True
 except ImportError:
-    OPENAI_AVAILABLE = False
+    WHISPER_AVAILABLE = False
 
-try:
-    import speech_recognition as sr
-    SPEECH_RECOGNITION_AVAILABLE = True
-except ImportError:
-    SPEECH_RECOGNITION_AVAILABLE = False
+# Load the tiny model once at startup
+whisper_model = None
+if WHISPER_AVAILABLE:
+    try:
+        whisper_model = whisper.load_model("tiny")
+        print("Whisper tiny model loaded successfully")
+    except Exception as e:
+        print(f"Failed to load Whisper model: {e}")
+        WHISPER_AVAILABLE = False
 
 # Configuration
 rooms = defaultdict(lambda: {"transcript": [], "chunk_queue": queue.Queue()})
 audio_workers = {}
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
 def get_transcription_backend():
     """Determine which transcription backend to use"""
-    if OPENAI_API_KEY and OPENAI_AVAILABLE:
-        return "openai"
-    elif SPEECH_RECOGNITION_AVAILABLE:
-        return "speech_recognition"
+    if WHISPER_AVAILABLE and whisper_model is not None:
+        return "whisper"
     else:
         return "mock"
 
@@ -91,94 +90,82 @@ def audio_worker_for_room(room, socketio):
 def transcribe_audio_data(audio_data, backend="mock"):
     """Transcribe audio data using the specified backend"""
     try:
-        if backend == "openai" and OPENAI_AVAILABLE:
-            return transcribe_with_openai(audio_data)
-        elif backend == "speech_recognition" and SPEECH_RECOGNITION_AVAILABLE:
-            return transcribe_with_speech_recognition(audio_data)
+        if backend == "whisper" and WHISPER_AVAILABLE and whisper_model is not None:
+            return transcribe_with_whisper(audio_data)
         else:
             return transcribe_mock(audio_data)
     except Exception as e:
         logger.error(f"Transcription error with {backend}: {e}")
         return None
 
-def transcribe_with_openai(audio_data):
-    """Transcribe using OpenAI Whisper API"""
+def transcribe_with_whisper(audio_data):
+    """Transcribe using local OpenAI Whisper tiny model"""
     try:
-        import tempfile
+        import numpy as np
+        import wave
+        import io
 
-        # Save audio data to temporary file (Windows compatible)
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-            temp_path = temp_file.name
-            temp_file.write(audio_data)
+        # Convert raw audio data to numpy array
+        # Assume the audio_data is a WAV file in bytes
+        audio_array = None
 
-        # Use OpenAI Whisper
-        client = openai.OpenAI(api_key=OPENAI_API_KEY)
-        with open(temp_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="text",
-                language="en"
-            )
-
-        # Clean up
         try:
-            os.remove(temp_path)
-        except:
-            pass
+            # Try to parse as WAV file
+            with io.BytesIO(audio_data) as audio_io:
+                with wave.open(audio_io, 'rb') as wav_file:
+                    # Get audio parameters
+                    sample_rate = wav_file.getframerate()
+                    n_channels = wav_file.getnchannels()
+                    sample_width = wav_file.getsampwidth()
+                    n_frames = wav_file.getnframes()
 
-        return transcript.strip() if transcript else None
+                    # Read audio data
+                    raw_audio = wav_file.readframes(n_frames)
 
-    except Exception as e:
-        logger.error(f"OpenAI transcription error: {e}")
-        return None
+                    # Convert to numpy array
+                    if sample_width == 1:
+                        audio_array = np.frombuffer(raw_audio, dtype=np.uint8)
+                        audio_array = (audio_array.astype(np.float32) - 128) / 128.0
+                    elif sample_width == 2:
+                        audio_array = np.frombuffer(raw_audio, dtype=np.int16)
+                        audio_array = audio_array.astype(np.float32) / 32768.0
+                    elif sample_width == 4:
+                        audio_array = np.frombuffer(raw_audio, dtype=np.int32)
+                        audio_array = audio_array.astype(np.float32) / 2147483648.0
 
-def transcribe_with_speech_recognition(audio_data):
-    """Transcribe using SpeechRecognition library"""
-    try:
-        import tempfile
-        r = sr.Recognizer()
+                    # Handle stereo by taking the first channel
+                    if n_channels > 1:
+                        audio_array = audio_array.reshape(-1, n_channels)[:, 0]
 
-        # Save audio data to temporary file (Windows compatible)
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-            temp_path = temp_file.name
-            temp_file.write(audio_data)
+                    # Resample to 16kHz if needed (Whisper expects 16kHz)
+                    if sample_rate != 16000:
+                        # Simple resampling (not ideal but works for testing)
+                        target_length = int(len(audio_array) * 16000 / sample_rate)
+                        audio_array = np.interp(
+                            np.linspace(0, len(audio_array), target_length),
+                            np.arange(len(audio_array)),
+                            audio_array
+                        )
 
-        # Load audio file
-        with sr.AudioFile(temp_path) as source:
-            # Adjust for ambient noise
-            r.adjust_for_ambient_noise(source, duration=0.5)
-            audio = r.record(source)
+        except Exception as wav_error:
+            logger.error(f"Failed to parse WAV data: {wav_error}")
+            return None
 
-        # Try multiple recognition services
-        text = None
-        try:
-            # Try Google Speech Recognition first
-            text = r.recognize_google(audio, language='en-US')
-        except (sr.UnknownValueError, sr.RequestError):
-            try:
-                # Fallback to Sphinx (offline)
-                text = r.recognize_sphinx(audio)
-            except (sr.UnknownValueError, sr.RequestError):
-                pass
+        if audio_array is None or len(audio_array) == 0:
+            logger.error("No audio data to transcribe")
+            return None
 
-        # Clean up
-        try:
-            os.remove(temp_path)
-        except:
-            pass
+        # Use Whisper model for transcription with numpy array
+        result = whisper_model.transcribe(audio_array, language="en")
+        text = result["text"]
 
         return text.strip() if text else None
 
-    except sr.UnknownValueError:
-        # Speech was unintelligible
-        return None
-    except sr.RequestError as e:
-        logger.error(f"Speech recognition service error: {e}")
-        return None
     except Exception as e:
-        logger.error(f"Speech recognition error: {e}")
+        logger.error(f"Whisper transcription error: {e}")
         return None
+
+
 
 def transcribe_mock(audio_data):
     """Mock transcription for testing"""
@@ -238,8 +225,8 @@ def get_transcription_stats():
     backend = get_transcription_backend()
     return {
         "backend": backend,
-        "openai_available": OPENAI_AVAILABLE,
-        "speech_recognition_available": SPEECH_RECOGNITION_AVAILABLE,
+        "whisper_available": WHISPER_AVAILABLE,
+        "whisper_model_loaded": whisper_model is not None,
         "active_rooms": len(audio_workers),
         "total_rooms": len(rooms)
     }
