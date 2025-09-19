@@ -7,7 +7,8 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Get API key from environment variable
-API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+API_KEY = "AIzaSyDD3-4VGqZbncObJ7_VFA2UeovjrEO6ag0"
+
 
 if not API_KEY:
     logger.warning("No Gemini API key found. Set GEMINI_API_KEY or GOOGLE_API_KEY environment variable.")
