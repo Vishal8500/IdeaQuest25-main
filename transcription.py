@@ -38,13 +38,13 @@ def get_transcription_backend():
     else:
         return "mock"
 
-def handle_audio_chunk(room, b64, ts=None, seq=None):
+def handle_audio_chunk(room, b64, ts=None, seq=None, from_sid=None):
     """Add base64 audio chunk into the queue for transcription"""
     if not b64:
         return
     try:
         raw = base64.b64decode(b64)
-        rooms[room]["chunk_queue"].put((ts or time.time(), seq or 0, raw))
+        rooms[room]["chunk_queue"].put((ts or time.time(), seq or 0, raw, from_sid))
     except Exception as e:
         logger.error(f"Error handling audio chunk: {e}")
 
@@ -68,21 +68,34 @@ def audio_worker_for_room(room, socketio):
             now = time.time()
             if buffer and (now - last_flush >= FLUSH_SECONDS):
                 buffer.sort(key=lambda x: (x[0], x[1]))
-                combined = b''.join([b for (_, _, b) in buffer])
-                buffer, last_flush = [], now
 
-                # Only process if we have substantial audio data
-                if len(combined) > 1024:  # At least 1KB of audio
-                    text = transcribe_audio_data(combined, backend)
-                    if text and text.strip():
-                        entry = {
-                            "ts": int(now),
-                            "text": text.strip(),
-                            "backend": backend
-                        }
-                        rooms[room]["transcript"].append(entry)
-                        socketio.emit('transcript-update', {"room": room, "entry": entry}, room=room)
-                        logger.info(f"Transcribed: {text[:50]}...")
+                # Group by speaker (from_sid) to process separately
+                speaker_buffers = {}
+                for ts, seq, audio_data, from_sid in buffer:
+                    if from_sid not in speaker_buffers:
+                        speaker_buffers[from_sid] = []
+                    speaker_buffers[from_sid].append(audio_data)
+
+                # Process each speaker's audio separately
+                for from_sid, audio_chunks in speaker_buffers.items():
+                    combined = b''.join(audio_chunks)
+
+                    # Only process if we have substantial audio data
+                    if len(combined) > 1024:  # At least 1KB of audio
+                        text = transcribe_audio_data(combined, backend)
+                        if text and text.strip():
+                            entry = {
+                                "ts": int(now),
+                                "text": text.strip(),
+                                "backend": backend,
+                                "sid": from_sid,
+                                "speaker": f"User {from_sid[:8]}" if from_sid else "Unknown"
+                            }
+                            rooms[room]["transcript"].append(entry)
+                            socketio.emit('transcript-update', {"room": room, "entry": entry}, room=room)
+                            logger.info(f"Transcribed from {from_sid}: {text[:50]}...")
+
+                buffer, last_flush = [], now
 
         except Exception as e:
             logger.error(f"Audio worker error: {e}")

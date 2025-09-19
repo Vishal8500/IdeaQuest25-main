@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: agamai-meeting-platform
+    env: python
+    runtime: python-3.11.9
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+    healthCheckPath: /health
+    autoDeploy: false

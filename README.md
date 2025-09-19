@@ -170,7 +170,21 @@ python test_app.py
 
 ## 🚀 Production Deployment
 
-### Recommended Setup
+### Quick Deploy to Render (Recommended)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+
+1. **Push to GitHub** and connect to Render
+2. **Use provided `render.yaml`** for automatic configuration
+3. **Set environment variables** (optional):
+   ```
+   GEMINI_API_KEY=your-gemini-api-key
+   OPENAI_API_KEY=your-openai-api-key
+   ```
+4. **Deploy!** Your app will be live at `https://your-app.onrender.com`
+
+See [DEPLOY.md](DEPLOY.md) for detailed deployment instructions.
+
+### Other Platforms
 1. Use **HTTPS** (required for WebRTC)
 2. Configure **TURN servers** for NAT traversal
 3. Set up **load balancing** for multiple instances
@@ -180,7 +194,7 @@ python test_app.py
 ### Environment Variables for Production
 ```bash
 FLASK_ENV=production
-PORT=5000
+PORT=10000  # Render uses this port
 GEMINI_API_KEY=your-production-key
 ```
 

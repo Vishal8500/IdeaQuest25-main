@@ -1,0 +1,9 @@
+# Development requirements (includes eventlet for local development)
+-r requirements.txt
+
+# Local development async backend
+eventlet==0.36.1
+
+# Optional development dependencies
+opencv-python-headless==4.10.0.84
+numpy==1.25.4

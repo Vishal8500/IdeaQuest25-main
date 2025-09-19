@@ -1,15 +1,12 @@
 # server.py - Complete implementation with all features
-import eventlet
-eventlet.monkey_patch()
+# Adaptive async mode for local development and production deployment
 
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, join_room, leave_room, emit
 from collections import defaultdict
 import logging
-import threading
 import os
 import time
-import json
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
@@ -18,11 +15,27 @@ log = logging.getLogger("agamai-platform")
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'agamai-secret-key-2024')
 
+# Determine the best async mode based on available packages
+def get_async_mode():
+    """Determine the best async mode for the environment"""
+    try:
+        import gevent
+        return 'gevent'
+    except ImportError:
+        try:
+            import eventlet
+            return 'eventlet'
+        except ImportError:
+            return 'threading'
+
+ASYNC_MODE = get_async_mode()
+log.info(f"Using async mode: {ASYNC_MODE}")
+
 socketio = SocketIO(
-    app, 
-    cors_allowed_origins='*', 
-    async_mode='eventlet', 
-    logger=False, 
+    app,
+    cors_allowed_origins='*',
+    async_mode=ASYNC_MODE,
+    logger=False,
     engineio_logger=False,
     ping_timeout=60,
     ping_interval=25
@@ -390,10 +403,6 @@ def on_join(data):
         "engagement_score": 0.5,
         "attention_scores": []
     }
-
-    # Start transcription worker if enabled
-    if TRANSCRIPTION_ENABLED:
-        start_transcription_worker(room, socketio)
     
     # Send existing peers to new participant
     existing_peers = [sid for sid in rooms[room] if sid != request.sid]
@@ -426,19 +435,46 @@ def on_leave(data):
 def handle_offer(data):
     target = data.get('to')
     sdp = data.get('sdp')
-    emit('offer', {'sdp': sdp, 'from': request.sid}, room=target)
+    log.info(f"Forwarding offer from {request.sid} to {target}")
+    emit('offer', {'sdp': sdp, 'from': request.sid}, to=target)
 
 @socketio.on('answer')
 def handle_answer(data):
     target = data.get('to')
     sdp = data.get('sdp')
-    emit('answer', {'sdp': sdp, 'from': request.sid}, room=target)
+    log.info(f"Forwarding answer from {request.sid} to {target}")
+    emit('answer', {'sdp': sdp, 'from': request.sid}, to=target)
 
 @socketio.on('ice-candidate')
 def handle_ice(data):
     target = data.get('to')
     candidate = data.get('candidate')
-    emit('ice-candidate', {'candidate': candidate, 'from': request.sid}, room=target)
+    log.info(f"Forwarding ICE candidate from {request.sid} to {target}")
+    emit('ice-candidate', {'candidate': candidate, 'from': request.sid}, to=target)
+
+@socketio.on('audio-chunk')
+def handle_audio_chunk(data):
+    """Handle audio chunks for server-side transcription"""
+    room = data.get('room', 'default')
+    audio_data = data.get('audio')
+    ts = data.get('ts', time.time())
+    seq = data.get('seq', 0)
+    from_sid = data.get('from', request.sid)  # Speaker ID
+
+    if not audio_data:
+        return
+
+    try:
+        # Import transcription module if available
+        if TRANSCRIPTION_ENABLED:
+            from transcription import handle_audio_chunk, start_transcription_worker
+            handle_audio_chunk(room, audio_data, ts, seq, from_sid)
+            start_transcription_worker(room, socketio)
+            log.info(f"Processing audio chunk from {from_sid} in room {room}")
+        else:
+            log.warning("Transcription not enabled, ignoring audio chunk")
+    except Exception as e:
+        log.error(f"Error handling audio chunk: {e}")
 
 @socketio.on('transcript-text')
 def handle_transcript_text(data):
@@ -540,7 +576,7 @@ def handle_attention(data):
 def handle_network_stats(data):
     room = data.get('room', 'default')
     stats = data.get('stats', {})
-
+    
     # Store network stats
     room_data[room]["network_stats"][request.sid] = {
         "timestamp": time.time(),
@@ -548,7 +584,7 @@ def handle_network_stats(data):
         "packet_loss": stats.get("packet_loss", 0),
         "bandwidth": stats.get("bandwidth", 1000)
     }
-
+    
     # Evaluate network and suggest adaptation
     if NETWORK_ADAPTATION_ENABLED:
         try:
@@ -556,23 +592,6 @@ def handle_network_stats(data):
             emit('network-adaptation', {"mode": mode, "stats": stats})
         except Exception as e:
             log.error(f"Network adaptation error: {e}")
-
-@socketio.on('audio-chunk')
-def handle_audio_chunk_event(data):
-    """Handle real-time audio chunks for transcription"""
-    if not TRANSCRIPTION_ENABLED:
-        return
-
-    room = data.get('room', 'default')
-    audio_data = data.get('audio')
-    timestamp = data.get('timestamp')
-    sequence = data.get('sequence', 0)
-
-    if audio_data and room:
-        try:
-            handle_audio_chunk(room, audio_data, timestamp, sequence)
-        except Exception as e:
-            log.error(f"Error handling audio chunk: {e}")
 
 def analyze_simple_sentiment(text):
     """Simple sentiment analysis"""
@@ -591,32 +610,39 @@ def analyze_simple_sentiment(text):
 
 if __name__ == '__main__':
     try:
+        # Render uses PORT environment variable
         PORT = int(os.environ.get("PORT", 5000))
         DEBUG = os.environ.get("FLASK_ENV") != "production"
+        HOST = '0.0.0.0'  # Required for Render deployment
 
-        print(f"Starting AgamAI Meeting Platform on port {PORT}")
-        print(f"Debug mode: {DEBUG}")
-        print(f"Features enabled:")
-        print(f"  - Transcription: {TRANSCRIPTION_ENABLED}")
-        print(f"  - Summarizer: {SUMMARIZER_ENABLED}")
-        print(f"  - Network Adaptation: {NETWORK_ADAPTATION_ENABLED}")
-        print(f"  - Engagement: {ENGAGEMENT_ENABLED}")
-        print(f"  - Sentiment: {SENTIMENT_ENABLED}")
+        print(f"🚀 Starting AgamAI Meeting Platform")
+        print(f"📡 Server: http://{HOST}:{PORT}")
+        print(f"🔧 Debug mode: {DEBUG}")
+        print(f"🌍 Environment: {'Production' if not DEBUG else 'Development'}")
+        print(f"🎯 Features enabled:")
+        print(f"   ✅ Transcription: {'Enabled' if TRANSCRIPTION_ENABLED else 'Disabled'}")
+        print(f"   ✅ AI Summarization: {'Enabled' if SUMMARIZER_ENABLED else 'Disabled'}")
+        print(f"   ✅ Network Adaptation: {'Enabled' if NETWORK_ADAPTATION_ENABLED else 'Disabled'}")
+        print(f"   ✅ Engagement Tracking: {'Enabled' if ENGAGEMENT_ENABLED else 'Disabled'}")
+        print(f"   ✅ Sentiment Analysis: {'Enabled' if SENTIMENT_ENABLED else 'Disabled'}")
 
-        log.info(f"Starting AgamAI Meeting Platform on port {PORT}")
+        log.info(f"Starting AgamAI Meeting Platform on {HOST}:{PORT}")
         log.info(f"Debug mode: {DEBUG}")
         log.info(f"Features enabled: Transcription={TRANSCRIPTION_ENABLED}, Summarizer={SUMMARIZER_ENABLED}, Network={NETWORK_ADAPTATION_ENABLED}, Engagement={ENGAGEMENT_ENABLED}, Sentiment={SENTIMENT_ENABLED}")
 
-        print("Starting SocketIO server...")
+        print("🌐 Starting SocketIO server...")
+        print("=" * 50)
+
         socketio.run(
             app,
-            host='0.0.0.0',
+            host=HOST,
             port=PORT,
             debug=DEBUG,
             use_reloader=False,
             allow_unsafe_werkzeug=True
         )
     except Exception as e:
-        print(f"Error starting server: {e}")
+        print(f"❌ Error starting server: {e}")
         import traceback
         traceback.print_exc()
+        exit(1)

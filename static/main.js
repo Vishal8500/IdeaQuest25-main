@@ -8,9 +8,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let meetingStartTime = null;
   let currentTab = 'participants';
   let speechRecognition = null;
-  let isListening = false;
-  let speechRecognitionEnabled = false;
-  let lastInterimResult = '';
   let attentionInterval = null;
   let networkStatsInterval = null;
   let engagementUpdateInterval = null;
@@ -36,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const summarizeBtn = document.getElementById('summarizeBtn');
   const leaderboard = document.getElementById('leaderboard');
   const notifications = document.getElementById('notifications');
+  const speechStatus = document.getElementById('speechStatus');
   
   // Stats elements
   const rttEl = document.getElementById('rtt');
@@ -45,14 +43,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const avgAttentionEl = document.getElementById('avgAttention');
   const engagementScoreEl = document.getElementById('engagementScore');
   const localAttentionEl = document.getElementById('localAttention');
-
-  // Speech recognition elements
-  const toggleSpeechBtn = document.getElementById('toggleSpeechRecognition');
-  const speechStatusEl = document.getElementById('speechStatus');
-  const speechConfidenceEl = document.getElementById('speechConfidence');
-  const confidenceLevelEl = document.getElementById('confidenceLevel');
-  const confidenceTextEl = document.getElementById('confidenceText');
-  const interimTextEl = document.getElementById('interimText');
   
   // Quick action buttons
   const toggleVideoBtn = document.getElementById('toggleVideo');
@@ -77,7 +67,9 @@ document.addEventListener('DOMContentLoaded', () => {
   initializeTabs();
   initializeCharts();
   initializeQuickActions();
-  initializeSpeechRecognition();
+
+  // Initialize speech status
+  updateSpeechStatus('inactive', 'Speech recognition inactive');
   
   function log(...args) {
     console.log('[AgamAI]', ...args);
@@ -202,26 +194,6 @@ document.addEventListener('DOMContentLoaded', () => {
     shareScreenBtn.addEventListener('click', shareScreen);
     toggleTranscriptBtn.addEventListener('click', toggleTranscript);
   }
-
-  function initializeSpeechRecognition() {
-    // Check if Web Speech API is supported
-    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      speechStatusEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> <span>Speech recognition not supported in this browser</span>';
-      toggleSpeechBtn.disabled = true;
-      toggleSpeechBtn.style.opacity = '0.5';
-      return;
-    }
-
-    // Initialize speech recognition button
-    toggleSpeechBtn.addEventListener('click', toggleSpeechRecognition);
-
-    // Update initial status
-    updateSpeechStatus('inactive', 'Speech recognition ready');
-    updateConfidence(0);
-    updateInterimText('Click "Start Speech" to begin...');
-
-    log('Speech recognition initialized');
-  }
   
   // Socket event handlers
   socket.on('connect', () => {
@@ -342,16 +314,10 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Start features
       startMeetingTimer();
+      startSpeechRecognition();
       startAttentionDetection();
       startNetworkMonitoring();
       startPeriodicUpdates();
-
-      // Auto-start speech recognition if supported
-      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-        setTimeout(() => {
-          startEnhancedSpeechRecognition();
-        }, 1000); // Small delay to ensure everything is set up
-      }
       
       showNotification(`Joined meeting: ${room}`, 'success');
       log(`Joined room: ${room}`);
@@ -381,7 +347,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     if (speechRecognition) {
-      stopSpeechRecognition();
+      speechRecognition.stop();
+      speechRecognition = null;
+    }
+
+    // Clear recognition restart timeout
+    if (recognitionRestartTimeout) {
+      clearTimeout(recognitionRestartTimeout);
+      recognitionRestartTimeout = null;
+    }
+
+    // Hide interim transcript
+    if (interimTranscriptElement) {
+      interimTranscriptElement.style.display = 'none';
     }
     
     if (attentionInterval) {
@@ -457,73 +435,114 @@ document.addEventListener('DOMContentLoaded', () => {
   function createPeerConnectionFor(remoteSid) {
     const pc = new RTCPeerConnection(config);
     pcs[remoteSid] = pc;
-    
+
     // Add local stream tracks
     if (localStream) {
       localStream.getTracks().forEach(track => {
+        log(`Adding ${track.kind} track to peer connection for ${remoteSid}`);
         pc.addTrack(track, localStream);
       });
     }
-    
+
     // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        log(`Sending ICE candidate to ${remoteSid}`);
         socket.emit('ice-candidate', {
           to: remoteSid,
           candidate: event.candidate
         });
+      } else {
+        log(`ICE gathering complete for ${remoteSid}`);
       }
     };
-    
+
     // Handle remote stream
     pc.ontrack = (event) => {
-      log(`Received remote stream from ${remoteSid}`);
-      attachRemoteStream(remoteSid, event.streams[0]);
+      log(`Received ${event.track.kind} track from ${remoteSid}`);
+      if (event.streams && event.streams[0]) {
+        attachRemoteStream(remoteSid, event.streams[0]);
+      }
     };
-    
+
     // Handle connection state changes
     pc.onconnectionstatechange = () => {
       log(`Connection state with ${remoteSid}: ${pc.connectionState}`);
-      
+
       if (pc.connectionState === 'connected') {
+        log(`Successfully connected to ${remoteSid}`);
         startStatsCollection(remoteSid);
-      } else if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+      } else if (pc.connectionState === 'connecting') {
+        log(`Connecting to ${remoteSid}...`);
+      } else if (pc.connectionState === 'failed') {
+        log(`Connection failed with ${remoteSid}, attempting restart`);
+        // Attempt to restart the connection
+        setTimeout(() => {
+          if (pcs[remoteSid] && pcs[remoteSid].connectionState === 'failed') {
+            log(`Restarting connection with ${remoteSid}`);
+            removePeer(remoteSid);
+            createPeerAndOffer(remoteSid);
+          }
+        }, 2000);
+      } else if (['disconnected', 'closed'].includes(pc.connectionState)) {
+        log(`Disconnected from ${remoteSid}`);
         removePeer(remoteSid);
         removeParticipant(remoteSid);
       }
     };
-    
+
+    // Handle ICE connection state changes
+    pc.oniceconnectionstatechange = () => {
+      log(`ICE connection state with ${remoteSid}: ${pc.iceConnectionState}`);
+    };
+
+    // Handle signaling state changes
+    pc.onsignalingstatechange = () => {
+      log(`Signaling state with ${remoteSid}: ${pc.signalingState}`);
+    };
+
     return pc;
   }
   
   async function handleOffer(data) {
     try {
+      log(`Handling offer from ${data.from}`);
       const pc = createPeerConnectionFor(data.from);
+
+      log(`Setting remote description for ${data.from}`);
       await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-      
+
+      log(`Creating answer for ${data.from}`);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      
+
+      log(`Sending answer to ${data.from}`);
       socket.emit('answer', {
         to: data.from,
         sdp: pc.localDescription
       });
-      
-      log(`Sent answer to ${data.from}`);
+
+      log(`Successfully sent answer to ${data.from}`);
     } catch (error) {
-      log('Error handling offer:', error);
+      log(`Error handling offer from ${data.from}:`, error);
+      showNotification(`Failed to connect to ${data.from}`, 'error');
     }
   }
   
   async function handleAnswer(data) {
     try {
+      log(`Handling answer from ${data.from}`);
       const pc = pcs[data.from];
       if (pc) {
+        log(`Setting remote description (answer) for ${data.from}`);
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-        log(`Set remote description for ${data.from}`);
+        log(`Successfully set remote description for ${data.from}`);
+      } else {
+        log(`No peer connection found for ${data.from}`);
       }
     } catch (error) {
-      log('Error handling answer:', error);
+      log(`Error handling answer from ${data.from}:`, error);
+      showNotification(`Failed to complete connection to ${data.from}`, 'error');
     }
   }
   
@@ -540,17 +559,18 @@ document.addEventListener('DOMContentLoaded', () => {
   
   function attachRemoteStream(remoteSid, stream) {
     let videoElement = document.getElementById(`remote_${remoteSid}`);
-    
+
     if (!videoElement) {
       const wrapper = document.createElement('div');
       wrapper.id = `wrap_${remoteSid}`;
       wrapper.className = 'video-tile';
-      
+
       videoElement = document.createElement('video');
       videoElement.id = `remote_${remoteSid}`;
       videoElement.autoplay = true;
       videoElement.playsInline = true;
-      
+      videoElement.muted = false; // Allow audio for transcription
+
       const overlay = document.createElement('div');
       overlay.className = 'tile-overlay';
       overlay.innerHTML = `
@@ -565,271 +585,44 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         </div>
       `;
-      
+
       wrapper.appendChild(videoElement);
       wrapper.appendChild(overlay);
       remotesGrid.appendChild(wrapper);
     }
-    
+
     videoElement.srcObject = stream;
-  }
-  
-  function removePeer(remoteSid) {
-    if (pcs[remoteSid]) {
-      try {
-        pcs[remoteSid].close();
-      } catch (error) {
-        log('Error closing peer connection:', error);
-      }
-      delete pcs[remoteSid];
-    }
-    
-    const wrapper = document.getElementById(`wrap_${remoteSid}`);
-    if (wrapper) {
-      wrapper.remove();
-    }
-  }
-  
-  // Enhanced Speech Recognition with Live Updates
-  function toggleSpeechRecognition() {
-    if (!speechRecognitionEnabled) {
-      startEnhancedSpeechRecognition();
-    } else {
-      stopSpeechRecognition();
-    }
+
+    // Set up audio capture for transcription
+    setupRemoteAudioCapture(remoteSid, stream);
+
+    log(`Attached remote stream for ${remoteSid}`);
   }
 
-  function startEnhancedSpeechRecognition() {
-    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      showNotification('Speech recognition not supported in this browser', 'error');
-      return;
-    }
+  // Remote audio capture for server-side transcription
+  const remoteAudioContexts = {};
+  const remoteAudioProcessors = {};
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    speechRecognition = new SpeechRecognition();
-
-    // Configure speech recognition for optimal real-time performance
-    speechRecognition.continuous = true;
-    speechRecognition.interimResults = true;
-    speechRecognition.lang = 'en-US';
-    speechRecognition.maxAlternatives = 3;
-
-    speechRecognition.onstart = () => {
-      isListening = true;
-      speechRecognitionEnabled = true;
-      updateSpeechStatus('listening', 'Listening...');
-      updateSpeechButton(true);
-      updateInterimText('Listening for speech...');
-      log('Enhanced speech recognition started');
-      showNotification('Speech recognition started - speak now!', 'success', 3000);
-    };
-
-    speechRecognition.onresult = (event) => {
-      let interimTranscript = '';
-      let finalTranscript = '';
-      let maxConfidence = 0;
-
-      // Process all results
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const transcript = result[0].transcript;
-        const confidence = result[0].confidence || 0.8;
-
-        maxConfidence = Math.max(maxConfidence, confidence);
-
-        if (result.isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
-        }
-      }
-
-      // Update confidence meter
-      updateConfidence(maxConfidence);
-
-      // Update interim results display
-      if (interimTranscript) {
-        updateInterimText(interimTranscript, true);
-        lastInterimResult = interimTranscript;
-      }
-
-      // Process final results
-      if (finalTranscript.trim()) {
-        const text = finalTranscript.trim();
-        if (text.length > 1) { // Filter out very short utterances
-          // Add to local transcript immediately for instant feedback
-          addLiveTranscriptEntry(text, maxConfidence);
-
-          // Send to server for processing and sharing
-          const payload = {
-            room,
-            text,
-            ts: Math.floor(Date.now() / 1000),
-            confidence: maxConfidence,
-            source: 'live_speech'
-          };
-
-          socket.emit('transcript-text', payload);
-          log(`Live transcript: ${text} (confidence: ${(maxConfidence * 100).toFixed(1)}%)`);
-
-          // Clear interim text after final result
-          updateInterimText('Listening for speech...');
-        }
-      }
-    };
-
-    speechRecognition.onerror = (event) => {
-      log('Speech recognition error:', event.error);
-
-      switch (event.error) {
-        case 'not-allowed':
-          updateSpeechStatus('error', 'Microphone access denied');
-          showNotification('Please allow microphone access for speech recognition', 'error');
-          stopSpeechRecognition();
-          break;
-        case 'network':
-          updateSpeechStatus('error', 'Network error');
-          showNotification('Network error - retrying speech recognition...', 'warning', 3000);
-          break;
-        case 'no-speech':
-          updateSpeechStatus('listening', 'No speech detected - keep talking');
-          break;
-        case 'audio-capture':
-          updateSpeechStatus('error', 'Audio capture error');
-          showNotification('Audio capture error - check microphone', 'error');
-          break;
-        default:
-          updateSpeechStatus('error', `Error: ${event.error}`);
-          showNotification(`Speech recognition error: ${event.error}`, 'warning');
-      }
-    };
-
-    speechRecognition.onend = () => {
-      isListening = false;
-
-      if (speechRecognitionEnabled) {
-        // Auto-restart if still enabled
-        setTimeout(() => {
-          if (speechRecognitionEnabled && speechRecognition) {
-            try {
-              speechRecognition.start();
-            } catch (error) {
-              log('Error restarting speech recognition:', error);
-              updateSpeechStatus('error', 'Failed to restart');
-              showNotification('Speech recognition stopped - click to restart', 'warning');
-              stopSpeechRecognition();
-            }
-          }
-        }, 100);
-      } else {
-        updateSpeechStatus('inactive', 'Speech recognition stopped');
-        updateInterimText('Click "Start Speech" to begin...');
-      }
-    };
-
+  function setupRemoteAudioCapture(remoteSid, stream) {
     try {
-      speechRecognition.start();
-    } catch (error) {
-      log('Error starting speech recognition:', error);
-      updateSpeechStatus('error', 'Failed to start');
-      showNotification('Failed to start speech recognition: ' + error.message, 'error');
-      speechRecognitionEnabled = false;
-      updateSpeechButton(false);
-    }
-  }
-
-  function stopSpeechRecognition() {
-    speechRecognitionEnabled = false;
-    isListening = false;
-
-    if (speechRecognition) {
-      try {
-        speechRecognition.stop();
-      } catch (error) {
-        log('Error stopping speech recognition:', error);
+      // Only capture audio tracks
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        log(`No audio tracks found for ${remoteSid}`);
+        return;
       }
-      speechRecognition = null;
-    }
 
-    updateSpeechStatus('inactive', 'Speech recognition stopped');
-    updateSpeechButton(false);
-    updateInterimText('Click "Start Speech" to begin...');
-    updateConfidence(0);
-
-    showNotification('Speech recognition stopped', 'info', 2000);
-    log('Speech recognition stopped');
-  }
-
-  // UI Update Functions for Speech Recognition
-  function updateSpeechStatus(status, message) {
-    const statusIcon = status === 'listening' ? 'fa-microphone' :
-                      status === 'error' ? 'fa-exclamation-triangle' :
-                      'fa-microphone-slash';
-
-    speechStatusEl.innerHTML = `<i class="fas ${statusIcon}"></i> <span>${message}</span>`;
-    speechStatusEl.className = `status-indicator ${status}`;
-  }
-
-  function updateSpeechButton(isActive) {
-    if (isActive) {
-      toggleSpeechBtn.innerHTML = '<i class="fas fa-stop"></i> Stop Speech';
-      toggleSpeechBtn.className = 'btn-small speech-toggle listening';
-    } else {
-      toggleSpeechBtn.innerHTML = '<i class="fas fa-microphone"></i> Start Speech';
-      toggleSpeechBtn.className = 'btn-small speech-toggle';
-    }
-  }
-
-  function updateConfidence(confidence) {
-    const percentage = Math.round(confidence * 100);
-    confidenceLevelEl.style.width = `${percentage}%`;
-    confidenceTextEl.textContent = `${percentage}%`;
-  }
-
-  function updateInterimText(text, isSpeaking = false) {
-    interimTextEl.textContent = text;
-    interimTextEl.className = isSpeaking ? 'interim-text speaking' : 'interim-text';
-  }
-
-  function addLiveTranscriptEntry(text, confidence) {
-    const transcriptEntry = document.createElement('div');
-    transcriptEntry.className = 'transcript-entry live';
-
-    const timestamp = new Date().toLocaleTimeString();
-    const confidencePercent = Math.round(confidence * 100);
-
-    transcriptEntry.innerHTML = `
-      <div class="transcript-meta">
-        <span><strong>You (Live)</strong></span>
-        <span>${timestamp} • ${confidencePercent}% confidence</span>
-      </div>
-      <div class="transcript-text">${text}</div>
-    `;
-
-    transcriptBox.appendChild(transcriptEntry);
-    transcriptBox.scrollTop = transcriptBox.scrollHeight;
-
-    // Add a subtle animation
-    transcriptEntry.style.opacity = '0';
-    transcriptEntry.style.transform = 'translateY(10px)';
-    setTimeout(() => {
-      transcriptEntry.style.transition = 'all 0.3s ease';
-      transcriptEntry.style.opacity = '1';
-      transcriptEntry.style.transform = 'translateY(0)';
-    }, 10);
-  }
-
-  // Alternative audio chunk transcription method
-  function startAudioChunkTranscription() {
-    if (!localStream) return;
-
-    try {
+      // Create audio context for this remote participant
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioContext.createMediaStreamSource(localStream);
+      const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
-      let audioChunks = [];
-      let sequenceNumber = 0;
+      remoteAudioContexts[remoteSid] = audioContext;
+      remoteAudioProcessors[remoteSid] = processor;
+
+      let audioBuffer = [];
+      let lastSend = Date.now();
+      const SEND_INTERVAL = 3000; // Send audio chunks every 3 seconds
 
       processor.onaudioprocess = (event) => {
         const inputData = event.inputBuffer.getChannelData(0);
@@ -840,44 +633,330 @@ document.addEventListener('DOMContentLoaded', () => {
           pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
         }
 
-        audioChunks.push(pcmData);
+        audioBuffer.push(pcmData);
 
-        // Send chunks every 3 seconds
-        if (audioChunks.length >= 32) { // ~3 seconds at 4096 samples per chunk
-          const combinedData = new Int16Array(audioChunks.reduce((acc, chunk) => acc + chunk.length, 0));
-          let offset = 0;
-          for (const chunk of audioChunks) {
-            combinedData.set(chunk, offset);
-            offset += chunk.length;
-          }
-
-          // Convert to base64
-          const audioBlob = new Blob([combinedData], { type: 'audio/wav' });
-          const reader = new FileReader();
-          reader.onload = () => {
-            const base64Audio = reader.result.split(',')[1];
-            socket.emit('audio-chunk', {
-              room,
-              audio: base64Audio,
-              timestamp: Date.now(),
-              sequence: sequenceNumber++
-            });
-          };
-          reader.readAsDataURL(audioBlob);
-
-          audioChunks = [];
+        // Send accumulated audio data periodically
+        const now = Date.now();
+        if (now - lastSend >= SEND_INTERVAL && audioBuffer.length > 0) {
+          sendAudioChunkToServer(remoteSid, audioBuffer);
+          audioBuffer = [];
+          lastSend = now;
         }
       };
 
       source.connect(processor);
       processor.connect(audioContext.destination);
 
-      log('Audio chunk transcription started');
-      showNotification('Audio transcription active', 'info', 2000);
+      log(`Set up audio capture for remote participant ${remoteSid}`);
 
     } catch (error) {
-      log('Error starting audio chunk transcription:', error);
-      showNotification('Transcription not available', 'error', 3000);
+      log(`Error setting up audio capture for ${remoteSid}:`, error);
+    }
+  }
+
+  function sendAudioChunkToServer(remoteSid, audioBuffer) {
+    try {
+      // Combine all audio chunks
+      const totalLength = audioBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+      const combinedAudio = new Int16Array(totalLength);
+
+      let offset = 0;
+      for (const chunk of audioBuffer) {
+        combinedAudio.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      // Convert to base64
+      const audioBytes = new Uint8Array(combinedAudio.buffer);
+      const base64Audio = btoa(String.fromCharCode.apply(null, audioBytes));
+
+      // Send to server for transcription
+      socket.emit('audio-chunk', {
+        room,
+        audio: base64Audio,
+        ts: Math.floor(Date.now() / 1000),
+        seq: Date.now(),
+        from: remoteSid
+      });
+
+      log(`Sent audio chunk for ${remoteSid} (${combinedAudio.length} samples)`);
+
+    } catch (error) {
+      log(`Error sending audio chunk for ${remoteSid}:`, error);
+    }
+  }
+
+  function cleanupRemoteAudioCapture(remoteSid) {
+    if (remoteAudioContexts[remoteSid]) {
+      try {
+        remoteAudioContexts[remoteSid].close();
+        delete remoteAudioContexts[remoteSid];
+      } catch (error) {
+        log(`Error closing audio context for ${remoteSid}:`, error);
+      }
+    }
+
+    if (remoteAudioProcessors[remoteSid]) {
+      try {
+        remoteAudioProcessors[remoteSid].disconnect();
+        delete remoteAudioProcessors[remoteSid];
+      } catch (error) {
+        log(`Error disconnecting audio processor for ${remoteSid}:`, error);
+      }
+    }
+  }
+  
+  function removePeer(remoteSid) {
+    // Clean up audio capture first
+    cleanupRemoteAudioCapture(remoteSid);
+
+    if (pcs[remoteSid]) {
+      try {
+        pcs[remoteSid].close();
+      } catch (error) {
+        log('Error closing peer connection:', error);
+      }
+      delete pcs[remoteSid];
+    }
+
+    const wrapper = document.getElementById(`wrap_${remoteSid}`);
+    if (wrapper) {
+      wrapper.remove();
+    }
+
+    log(`Removed peer ${remoteSid}`);
+  }
+  
+  // Enhanced Speech Recognition with interim results
+  let interimTranscriptElement = null;
+  let recognitionRestartTimeout = null;
+
+  // Update speech recognition status indicator
+  function updateSpeechStatus(status, message) {
+    if (!speechStatus) return;
+
+    const icon = speechStatus.querySelector('i');
+    const text = speechStatus.querySelector('span');
+
+    // Remove all status classes
+    speechStatus.classList.remove('active', 'error');
+
+    switch (status) {
+      case 'active':
+        speechStatus.classList.add('active');
+        icon.className = 'fas fa-microphone';
+        text.textContent = message || 'Speech recognition active';
+        break;
+      case 'inactive':
+        icon.className = 'fas fa-microphone-slash';
+        text.textContent = message || 'Speech recognition inactive';
+        break;
+      case 'error':
+        speechStatus.classList.add('error');
+        icon.className = 'fas fa-exclamation-triangle';
+        text.textContent = message || 'Speech recognition error';
+        break;
+      case 'listening':
+        speechStatus.classList.add('active');
+        icon.className = 'fas fa-microphone';
+        text.textContent = message || 'Listening...';
+        break;
+    }
+  }
+
+  function startSpeechRecognition() {
+    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+      log('Speech recognition not supported in this browser');
+      showNotification('Speech recognition not supported in this browser', 'error');
+      return;
+    }
+
+    // Clear any existing recognition
+    if (speechRecognition) {
+      speechRecognition.stop();
+      speechRecognition = null;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    speechRecognition = new SpeechRecognition();
+
+    // Enhanced configuration
+    speechRecognition.continuous = true;
+    speechRecognition.interimResults = true;
+    speechRecognition.lang = 'en-US';
+    speechRecognition.maxAlternatives = 1;
+
+    // Create interim transcript display element if it doesn't exist
+    if (!interimTranscriptElement) {
+      interimTranscriptElement = document.createElement('div');
+      interimTranscriptElement.className = 'interim-transcript';
+      interimTranscriptElement.style.cssText = `
+        background: rgba(99, 102, 241, 0.1);
+        border: 1px solid rgba(99, 102, 241, 0.3);
+        border-radius: 8px;
+        padding: 12px;
+        margin: 8px 0;
+        font-style: italic;
+        color: #818cf8;
+        display: none;
+        animation: pulse 1.5s infinite;
+      `;
+      transcriptBox.appendChild(interimTranscriptElement);
+    }
+
+    speechRecognition.onstart = () => {
+      log('Speech recognition started successfully');
+      showNotification('Live transcription active', 'success', 2000);
+
+      // Update UI to show active state
+      if (toggleTranscriptBtn) {
+        toggleTranscriptBtn.classList.add('active');
+        toggleTranscriptBtn.innerHTML = '<i class="fas fa-microphone"></i>';
+      }
+
+      // Update status indicator
+      updateSpeechStatus('listening', 'Listening for speech...');
+    };
+
+    speechRecognition.onresult = (event) => {
+      let interimTranscript = '';
+      let finalTranscript = '';
+
+      // Process all results
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const transcript = result[0].transcript;
+
+        if (result.isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      // Display interim results
+      if (interimTranscript.trim()) {
+        interimTranscriptElement.innerHTML = `
+          <div class="interim-header">
+            <i class="fas fa-microphone"></i> Speaking...
+          </div>
+          <div class="interim-text">${interimTranscript}</div>
+        `;
+        interimTranscriptElement.style.display = 'block';
+        transcriptBox.scrollTop = transcriptBox.scrollHeight;
+
+        // Update status to show active speaking
+        updateSpeechStatus('active', 'Speaking detected...');
+      } else {
+        interimTranscriptElement.style.display = 'none';
+
+        // Return to listening state
+        updateSpeechStatus('listening', 'Listening for speech...');
+      }
+
+      // Process final results
+      if (finalTranscript.trim()) {
+        const text = finalTranscript.trim();
+
+        // Hide interim display
+        interimTranscriptElement.style.display = 'none';
+
+        // Send to server
+        const payload = {
+          room,
+          text,
+          ts: Math.floor(Date.now() / 1000),
+          confidence: event.results[event.results.length - 1][0].confidence || 0.9
+        };
+
+        socket.emit('transcript-text', payload);
+        log(`Final transcript: ${text}`);
+
+        // Add visual feedback for successful recognition
+        showNotification(`Recognized: "${text.substring(0, 30)}${text.length > 30 ? '...' : ''}"`, 'info', 3000);
+      }
+    };
+
+    speechRecognition.onerror = (event) => {
+      log('Speech recognition error:', event.error);
+      isRecognitionActive = false;
+
+      // Hide interim display on error
+      if (interimTranscriptElement) {
+        interimTranscriptElement.style.display = 'none';
+      }
+
+      switch (event.error) {
+        case 'not-allowed':
+          showNotification('Microphone access denied. Please allow microphone access and try again.', 'error', 8000);
+          updateSpeechStatus('error', 'Microphone access denied');
+          if (toggleTranscriptBtn) {
+            toggleTranscriptBtn.classList.remove('active');
+            toggleTranscriptBtn.innerHTML = '<i class="fas fa-microphone-slash"></i>';
+          }
+          break;
+        case 'no-speech':
+          log('No speech detected, restarting...');
+          updateSpeechStatus('listening', 'No speech detected, listening...');
+          // Don't show notification for no-speech, just restart
+          break;
+        case 'audio-capture':
+          showNotification('Microphone not available. Please check your microphone.', 'error');
+          updateSpeechStatus('error', 'Microphone not available');
+          break;
+        case 'network':
+          showNotification('Network error during speech recognition. Retrying...', 'warning');
+          updateSpeechStatus('error', 'Network error, retrying...');
+          break;
+        default:
+          showNotification(`Speech recognition error: ${event.error}`, 'error');
+          updateSpeechStatus('error', `Error: ${event.error}`);
+      }
+    };
+
+    speechRecognition.onend = () => {
+      log('Speech recognition ended');
+
+      // Hide interim display
+      if (interimTranscriptElement) {
+        interimTranscriptElement.style.display = 'none';
+      }
+
+      // Auto-restart if still in meeting and transcription is enabled
+      if (joined && toggleTranscriptBtn && toggleTranscriptBtn.classList.contains('active')) {
+        // Clear any existing restart timeout
+        if (recognitionRestartTimeout) {
+          clearTimeout(recognitionRestartTimeout);
+        }
+
+        // Restart after a short delay
+        recognitionRestartTimeout = setTimeout(() => {
+          if (joined && speechRecognition && toggleTranscriptBtn && toggleTranscriptBtn.classList.contains('active')) {
+            try {
+              speechRecognition.start();
+              log('Speech recognition restarted automatically');
+            } catch (error) {
+              log('Error restarting speech recognition:', error);
+              // Try again after a longer delay
+              setTimeout(() => {
+                if (joined && toggleTranscriptBtn && toggleTranscriptBtn.classList.contains('active')) {
+                  startSpeechRecognition();
+                }
+              }, 3000);
+            }
+          }
+        }, 1000);
+      }
+    };
+
+    // Start recognition
+    try {
+      speechRecognition.start();
+      log('Attempting to start speech recognition...');
+    } catch (error) {
+      log('Error starting speech recognition:', error);
+      showNotification('Failed to start speech recognition: ' + error.message, 'error');
+      isRecognitionActive = false;
     }
   }
   
@@ -1339,14 +1418,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (isActive) {
       // Stop speech recognition
-      stopSpeechRecognition();
+      if (speechRecognition) {
+        speechRecognition.stop();
+        speechRecognition = null;
+      }
+
+      // Clear any restart timeout
+      if (recognitionRestartTimeout) {
+        clearTimeout(recognitionRestartTimeout);
+        recognitionRestartTimeout = null;
+      }
+
+      // Hide interim transcript
+      if (interimTranscriptElement) {
+        interimTranscriptElement.style.display = 'none';
+      }
+
       toggleTranscriptBtn.classList.remove('active');
+      toggleTranscriptBtn.innerHTML = '<i class="fas fa-microphone-slash"></i>';
+      updateSpeechStatus('inactive', 'Speech recognition disabled');
       showNotification('Live transcription disabled', 'info', 2000);
     } else {
       // Start speech recognition
-      startEnhancedSpeechRecognition();
-      toggleTranscriptBtn.classList.add('active');
-      showNotification('Live transcription enabled', 'success', 2000);
+      startSpeechRecognition();
+      showNotification('Starting live transcription...', 'info', 2000);
     }
   }
   

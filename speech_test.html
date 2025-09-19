@@ -28,96 +28,71 @@
             align-items: center;
         }
         
-        button {
+        .btn {
             padding: 10px 20px;
             border: none;
             border-radius: 8px;
             cursor: pointer;
             font-weight: 600;
-            transition: all 0.2s ease;
+            transition: all 0.3s ease;
         }
         
-        .start-btn {
+        .btn.primary {
+            background: #6366f1;
+            color: white;
+        }
+        
+        .btn.primary:hover {
+            background: #4f46e5;
+        }
+        
+        .btn.active {
             background: #10b981;
-            color: white;
-        }
-        
-        .stop-btn {
-            background: #ef4444;
-            color: white;
-        }
-        
-        .listening {
-            animation: pulse 1.5s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
+            box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
         }
         
         .status {
             display: flex;
             align-items: center;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-        
-        .confidence-meter {
-            display: flex;
-            align-items: center;
             gap: 8px;
-        }
-        
-        .confidence-bar {
-            width: 100px;
-            height: 6px;
-            background: rgba(255,255,255,0.2);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-        
-        .confidence-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
-            border-radius: 3px;
-            width: 0%;
-            transition: width 0.3s ease;
-        }
-        
-        .interim-results {
-            background: rgba(99, 102, 241, 0.1);
-            border: 1px solid #6366f1;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 20px;
-            min-height: 50px;
-        }
-        
-        .interim-text {
-            font-style: italic;
-            color: #818cf8;
-        }
-        
-        .transcript {
+            padding: 8px 12px;
+            border-radius: 6px;
             background: rgba(0,0,0,0.3);
-            border-radius: 8px;
-            padding: 15px;
+            font-size: 14px;
+        }
+        
+        .status.active {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+        
+        .status.error {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+        
+        .transcript-container {
             max-height: 400px;
             overflow-y: auto;
+            padding: 15px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.1);
         }
         
         .transcript-entry {
-            background: rgba(255,255,255,0.05);
-            border-left: 3px solid #10b981;
-            border-radius: 6px;
+            margin-bottom: 15px;
             padding: 10px;
-            margin-bottom: 10px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 6px;
+            border-left: 3px solid #6b7280;
         }
         
         .transcript-meta {
+            display: flex;
+            justify-content: space-between;
             font-size: 12px;
-            color: #94a3b8;
+            color: #9ca3af;
             margin-bottom: 5px;
         }
         
@@ -126,129 +101,179 @@
             line-height: 1.4;
         }
         
-        .error {
-            color: #ef4444;
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid #ef4444;
-            border-radius: 6px;
-            padding: 10px;
-            margin-bottom: 15px;
+        .interim-transcript {
+            background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 8px 0;
+            font-style: italic;
+            color: #818cf8;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .interim-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #818cf8;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+        
+        .interim-text {
+            font-size: 14px;
+            line-height: 1.4;
+            color: #f8fafc;
+            font-style: italic;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .pulse {
+            animation: pulse 1.5s infinite;
+        }
+        
+        .info {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .info h3 {
+            margin: 0 0 10px 0;
+            color: #60a5fa;
         }
     </style>
 </head>
 <body>
-    <h1>🎤 Real-time Speech Recognition Test</h1>
-    
     <div class="container">
-        <h2>Speech Recognition Controls</h2>
+        <h1>🎤 Real-time Speech Recognition Test</h1>
+        
+        <div class="info">
+            <h3>Instructions:</h3>
+            <p>1. Click "Start Recognition" to begin speech-to-text</p>
+            <p>2. Speak clearly into your microphone</p>
+            <p>3. Watch for interim results (gray text) and final results (white text)</p>
+            <p>4. Grant microphone permissions when prompted</p>
+        </div>
         
         <div class="controls">
-            <button id="startBtn" class="start-btn">Start Listening</button>
-            <button id="stopBtn" class="stop-btn" disabled>Stop Listening</button>
-            <button id="clearBtn">Clear Transcript</button>
-        </div>
-        
-        <div class="status">
-            <span id="statusText">Ready to start</span>
-            <div class="confidence-meter">
-                <span>Confidence:</span>
-                <div class="confidence-bar">
-                    <div id="confidenceLevel" class="confidence-fill"></div>
-                </div>
-                <span id="confidenceText">0%</span>
+            <button id="startBtn" class="btn primary">Start Recognition</button>
+            <button id="stopBtn" class="btn" disabled>Stop Recognition</button>
+            <button id="clearBtn" class="btn">Clear Transcript</button>
+            <div id="status" class="status">
+                <span>🔴</span>
+                <span>Speech recognition inactive</span>
             </div>
-        </div>
-        
-        <div id="errorContainer"></div>
-    </div>
-    
-    <div class="container">
-        <h3>Live Speech (Interim Results)</h3>
-        <div class="interim-results">
-            <div id="interimText" class="interim-text">Start speaking to see live results...</div>
         </div>
     </div>
     
     <div class="container">
-        <h3>Final Transcript</h3>
-        <div id="transcript" class="transcript">
-            <div style="color: #64748b; font-style: italic; text-align: center; padding: 20px;">
-                No speech recognized yet. Click "Start Listening" and begin speaking.
-            </div>
+        <h2>Live Transcript</h2>
+        <div id="transcriptContainer" class="transcript-container">
+            <p style="color: #6b7280; text-align: center; margin: 40px 0;">
+                No transcript yet. Start speech recognition to begin.
+            </p>
         </div>
     </div>
 
     <script>
         let recognition = null;
-        let isListening = false;
+        let isRecognizing = false;
+        let interimElement = null;
         
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
         const clearBtn = document.getElementById('clearBtn');
-        const statusText = document.getElementById('statusText');
-        const confidenceLevel = document.getElementById('confidenceLevel');
-        const confidenceText = document.getElementById('confidenceText');
-        const interimText = document.getElementById('interimText');
-        const transcript = document.getElementById('transcript');
-        const errorContainer = document.getElementById('errorContainer');
+        const status = document.getElementById('status');
+        const transcriptContainer = document.getElementById('transcriptContainer');
         
-        // Check for speech recognition support
+        // Check browser support
         if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-            showError('Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.');
+            status.innerHTML = '<span>❌</span><span>Speech recognition not supported in this browser</span>';
+            status.classList.add('error');
             startBtn.disabled = true;
         }
         
-        function showError(message) {
-            errorContainer.innerHTML = `<div class="error">${message}</div>`;
-        }
-        
-        function clearError() {
-            errorContainer.innerHTML = '';
-        }
-        
-        function updateStatus(message, isActive = false) {
-            statusText.textContent = message;
-            if (isActive) {
-                statusText.style.color = '#10b981';
-                startBtn.classList.add('listening');
-            } else {
-                statusText.style.color = '#f8fafc';
-                startBtn.classList.remove('listening');
+        function updateStatus(state, message) {
+            status.classList.remove('active', 'error');
+            
+            switch (state) {
+                case 'active':
+                    status.classList.add('active');
+                    status.innerHTML = `<span class="pulse">🎤</span><span>${message}</span>`;
+                    break;
+                case 'inactive':
+                    status.innerHTML = `<span>🔴</span><span>${message}</span>`;
+                    break;
+                case 'error':
+                    status.classList.add('error');
+                    status.innerHTML = `<span>❌</span><span>${message}</span>`;
+                    break;
             }
         }
         
-        function updateConfidence(confidence) {
-            const percentage = Math.round(confidence * 100);
-            confidenceLevel.style.width = `${percentage}%`;
-            confidenceText.textContent = `${percentage}%`;
-        }
-        
-        function addTranscriptEntry(text, confidence, isFinal = true) {
+        function addTranscriptEntry(text, isFinal = true, confidence = 1.0) {
+            if (!isFinal) {
+                // Handle interim results
+                if (!interimElement) {
+                    interimElement = document.createElement('div');
+                    interimElement.className = 'interim-transcript';
+                    transcriptContainer.appendChild(interimElement);
+                }
+                
+                interimElement.innerHTML = `
+                    <div class="interim-header">
+                        <span class="pulse">🎤</span> Speaking...
+                    </div>
+                    <div class="interim-text">${text}</div>
+                `;
+                
+                transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+                return;
+            }
+            
+            // Remove interim element for final results
+            if (interimElement) {
+                interimElement.remove();
+                interimElement = null;
+            }
+            
+            // Clear placeholder text
+            if (transcriptContainer.children.length === 1 && 
+                transcriptContainer.children[0].tagName === 'P') {
+                transcriptContainer.innerHTML = '';
+            }
+            
+            // Add final transcript entry
             const entry = document.createElement('div');
             entry.className = 'transcript-entry';
             
-            const timestamp = new Date().toLocaleTimeString();
+            const now = new Date();
+            const timestamp = now.toLocaleTimeString();
             const confidencePercent = Math.round(confidence * 100);
             
             entry.innerHTML = `
                 <div class="transcript-meta">
-                    ${timestamp} • Confidence: ${confidencePercent}% • ${isFinal ? 'Final' : 'Interim'}
+                    <span><strong>You</strong></span>
+                    <span>${timestamp} (${confidencePercent}% confidence)</span>
                 </div>
                 <div class="transcript-text">${text}</div>
             `;
             
-            // Remove placeholder text
-            if (transcript.children.length === 1 && transcript.children[0].style.color) {
-                transcript.innerHTML = '';
-            }
-            
-            transcript.appendChild(entry);
-            transcript.scrollTop = transcript.scrollHeight;
+            transcriptContainer.appendChild(entry);
+            transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
         }
         
         function startRecognition() {
-            clearError();
-            
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             recognition = new SpeechRecognition();
             
@@ -258,44 +283,46 @@
             recognition.maxAlternatives = 1;
             
             recognition.onstart = () => {
-                isListening = true;
-                updateStatus('Listening... Speak now!', true);
+                isRecognizing = true;
+                updateStatus('active', 'Listening for speech...');
                 startBtn.disabled = true;
                 stopBtn.disabled = false;
-                interimText.textContent = 'Listening for speech...';
-                console.log('Speech recognition started');
+                startBtn.classList.remove('active');
+                stopBtn.classList.add('active');
             };
             
             recognition.onresult = (event) => {
                 let interimTranscript = '';
                 let finalTranscript = '';
-                let maxConfidence = 0;
                 
                 for (let i = event.resultIndex; i < event.results.length; i++) {
                     const result = event.results[i];
-                    const text = result[0].transcript;
-                    const confidence = result[0].confidence || 0.8;
-                    
-                    maxConfidence = Math.max(maxConfidence, confidence);
+                    const transcript = result[0].transcript;
                     
                     if (result.isFinal) {
-                        finalTranscript += text;
+                        finalTranscript += transcript;
                     } else {
-                        interimTranscript += text;
+                        interimTranscript += transcript;
                     }
                 }
                 
-                updateConfidence(maxConfidence);
-                
-                if (interimTranscript) {
-                    interimText.textContent = interimTranscript;
-                    interimText.style.color = '#818cf8';
+                if (interimTranscript.trim()) {
+                    addTranscriptEntry(interimTranscript, false);
+                    updateStatus('active', 'Speaking detected...');
+                } else if (!finalTranscript.trim()) {
+                    updateStatus('active', 'Listening for speech...');
                 }
                 
                 if (finalTranscript.trim()) {
-                    addTranscriptEntry(finalTranscript.trim(), maxConfidence);
-                    interimText.textContent = 'Listening for speech...';
-                    interimText.style.color = '#64748b';
+                    const confidence = event.results[event.results.length - 1][0].confidence || 0.9;
+                    addTranscriptEntry(finalTranscript.trim(), true, confidence);
+                    updateStatus('active', 'Speech recognized!');
+                    
+                    setTimeout(() => {
+                        if (isRecognizing) {
+                            updateStatus('active', 'Listening for speech...');
+                        }
+                    }, 1000);
                 }
             };
             
@@ -304,19 +331,19 @@
                 
                 switch (event.error) {
                     case 'not-allowed':
-                        showError('Microphone access denied. Please allow microphone access and try again.');
-                        break;
-                    case 'network':
-                        showError('Network error. Please check your internet connection.');
+                        updateStatus('error', 'Microphone access denied');
                         break;
                     case 'no-speech':
-                        updateStatus('No speech detected. Keep talking...', true);
-                        return; // Don't stop recognition
+                        updateStatus('active', 'No speech detected, listening...');
+                        return; // Don't stop for no-speech
                     case 'audio-capture':
-                        showError('Audio capture error. Please check your microphone.');
+                        updateStatus('error', 'Microphone not available');
+                        break;
+                    case 'network':
+                        updateStatus('error', 'Network error');
                         break;
                     default:
-                        showError(`Speech recognition error: ${event.error}`);
+                        updateStatus('error', `Error: ${event.error}`);
                 }
                 
                 if (event.error !== 'no-speech') {
@@ -325,18 +352,18 @@
             };
             
             recognition.onend = () => {
-                if (isListening) {
-                    // Auto-restart if still supposed to be listening
+                if (isRecognizing) {
+                    // Auto-restart if still supposed to be recognizing
                     setTimeout(() => {
-                        if (isListening) {
+                        if (isRecognizing) {
                             try {
                                 recognition.start();
-                            } catch (error) {
-                                console.error('Error restarting recognition:', error);
+                            } catch (e) {
+                                console.error('Error restarting recognition:', e);
                                 stopRecognition();
                             }
                         }
-                    }, 100);
+                    }, 1000);
                 }
             };
             
@@ -344,33 +371,42 @@
                 recognition.start();
             } catch (error) {
                 console.error('Error starting recognition:', error);
-                showError('Failed to start speech recognition: ' + error.message);
+                updateStatus('error', 'Failed to start recognition');
+                stopRecognition();
             }
         }
         
         function stopRecognition() {
-            isListening = false;
+            isRecognizing = false;
             
             if (recognition) {
                 recognition.stop();
                 recognition = null;
             }
             
-            updateStatus('Stopped');
+            if (interimElement) {
+                interimElement.remove();
+                interimElement = null;
+            }
+            
+            updateStatus('inactive', 'Speech recognition stopped');
             startBtn.disabled = false;
             stopBtn.disabled = true;
-            startBtn.classList.remove('listening');
-            interimText.textContent = 'Click "Start Listening" to begin...';
-            interimText.style.color = '#64748b';
-            updateConfidence(0);
+            startBtn.classList.remove('active');
+            stopBtn.classList.remove('active');
         }
         
         function clearTranscript() {
-            transcript.innerHTML = `
-                <div style="color: #64748b; font-style: italic; text-align: center; padding: 20px;">
-                    No speech recognized yet. Click "Start Listening" and begin speaking.
-                </div>
+            transcriptContainer.innerHTML = `
+                <p style="color: #6b7280; text-align: center; margin: 40px 0;">
+                    No transcript yet. Start speech recognition to begin.
+                </p>
             `;
+            
+            if (interimElement) {
+                interimElement.remove();
+                interimElement = null;
+            }
         }
         
         // Event listeners
@@ -378,7 +414,8 @@
         stopBtn.addEventListener('click', stopRecognition);
         clearBtn.addEventListener('click', clearTranscript);
         
-        console.log('Speech recognition test page loaded');
+        // Initialize
+        updateStatus('inactive', 'Speech recognition inactive');
     </script>
 </body>
 </html>
